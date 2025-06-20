@@ -1,0 +1,6 @@
+[oerv]
+name=oerv
+baseurl=https://eulermaker.compass-ci.openeuler.openatom.cn/api/ems4/repositories/openEuler-24.03-LTS-SP2:epol/openEuler%3A24.03-LTS-SP2/$basearch/
+enabled=1
+gpgcheck=1
+gpgkey=https://eulermaker.compass-ci.openeuler.openatom.cn/api/ems4/repositories/openEuler-24.03-LTS-SP2:epol/openEuler%3A24.03-LTS-SP2/$basearch/RPM-GPG-KEY-openEuler
