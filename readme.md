@@ -1,3 +1,33 @@
+## Ubuntu内安装使用
+
+```sh
+#下载解压包，进入解压出来的根目录
+#https://gitee.com/src-openeuler/ccb/
+#原来的补丁看情况需要自己手动下载，打补丁
+
+#复制Makefile到项目根目录
+root@oe:~/ccb# ls
+lib  LICENSE  Makefile  README.md  sbin  tests
+
+#安装，然后按照提示操作
+make install
+source /usr/local/lib/ccb/lib/env.sh
+#填写账号密码
+vim ~/.config/cli/defaults/config.yaml
+#主机至少需要以下组件 
+#apt install ruby ruby-rest-client curl wget docker-cli patch
+
+#打补丁（可选） select_image.patch
+#默认安装是这个位置,复制补丁过去
+#cp select_image.patch /usr/local/lib/ccb
+cd /usr/local/lib/ccb
+patch -p1 < select_image.patch
+
+#使用部分就和在openeuler的主机一样了。
+```
+
+## 容器内使用
+
 构建镜像：
 
 ```sh
@@ -48,3 +78,4 @@ ccb local-build --local-image=nonexist:now os_project=openEuler-24.03-LTS:everyt
 ```
 
 这样的话，在容器内使用ccb就和在主机使用ccb没有区别了
+
