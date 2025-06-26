@@ -1,0 +1,170 @@
+diff --git a/sbin/cli/local-build b/sbin/cli/local-build
+index 7b484e8..c6d592d 100755
+--- a/sbin/cli/local-build
++++ b/sbin/cli/local-build
+@@ -15,6 +15,8 @@ require "#{LKP_SRC}/sbin/cli/ccb_api_client"
+ debug_flag = false
+ debug_stage = nil
+ clean_flag = false
++local_image = nil
++cp_path = nil
+ config_hash = {}
+ dailybuild_hash = {"local" => "http://172.16.1.236:31744",
+                    "remote" => "http://121.36.84.172"}
+@@ -25,6 +27,9 @@ options = OptionParser.new do |opts|
+
+   opts.separator '    eg.1: ccb local-build os_project=openEuler:Mainline package=gcc --rm --debug=bp'
+   opts.separator '    eg.2: ccb local-build os_project=openEuler:Mainline package=gcc spec=gcc.spec --rm --debug=bp'
++  opts.separator '    eg.3: ccb local-build os_project=openEuler:Mainline package=gcc --local-image openeuler:22.03'
++  opts.separator '    eg.4: ccb local-build os_project=openEuler:Mainline package=gcc arch=riscv64'
++  opts.separator '    eg.5: ccb local-build os_project=openEuler:Mainline package=gcc --cp /home/openEuler.repo'
+   opts.separator ''
+   opts.separator 'options:'
+
+@@ -37,6 +42,14 @@ options = OptionParser.new do |opts|
+     debug_stage = debug
+   end
+
++  opts.on('--local-image IMAGE', 'use existing local docker image (e.g., openeuler:22.03)') do |image|
++    local_image = image
++  end
++
++  opts.on('--cp PATH', 'mount local path to docker container (e.g., /home/openEuler.repo)') do |path|
++    cp_path = path
++  end
++
+   opts.on('-h', '--help', 'show this message') do
+     puts options
+     exit
+@@ -64,8 +77,8 @@ begin
+     info = arg.split('=', 2)
+     key = info[0]
+     value = info[1] || ''
+-    if need_keys.include?(key)
+-      if value.length == 0
++    if need_keys.include?(key) || key == 'arch'
++      if value.length == 0 && key != 'arch'
+         puts options
+         puts "\n[ERROR] The parameter: #{key} requires a value"
+         exit
+@@ -364,7 +377,10 @@ def download_docker_image(config_hash, dailybuild_hash)
+   image_url = "#{dailybuild_hash['remote']}/EulerMaker/#{config_hash['branch']}/docker_img/#{config_hash['arch']}/#{image_name}"
+   puts "[INFO] Download docker image, please wait"
+   %x(wget #{image_url} -P #{config_hash['output_dir']} -q --show-progress)
+-  image_id=%x(docker load -i #{config_hash['output_dir']}/#{image_name} | awk -F':' '{print $NF}')
++  load_output = %x(docker load -i #{config_hash['output_dir']}/#{image_name} 2>&1).strip
++  if load_output =~ /Loaded image ID:\s*sha256:([a-f0-9]{64})/i
++    image_id = $1
++  end
+   %x(rm -f #{config_hash['output_dir']}/#{image_name})
+   if image_id.nil?
+     puts "[ERROR] Docker load failed"
+@@ -376,7 +392,12 @@ end
+ def build_package(image_id, clean_flag, config_hash)
+   container_name = "local-build-#{config_hash["package"]}"
+   %x(docker rm -f #{container_name} &>/dev/null)
+-  system("docker run -itd --net=host --name #{container_name} #{image_id} /bin/bash -c 'exit'")
++
++  puts "[INFO] Start building arch: #{config_hash["arch"]}"
++
++  docker_cmd = "docker run -itd --platform=#{config_hash["arch"]} --net=host --name #{container_name} #{image_id} bash"
++
++  system(docker_cmd)
+   exec_result=$?.exitstatus
+   if exec_result != 0
+     puts "[ERROR] Run a container failed"
+@@ -384,6 +405,12 @@ def build_package(image_id, clean_flag, config_hash)
+   end
+   %x(docker cp #{LKP_SRC} #{container_name}:/lkp-tests)
+   %x(docker cp #{config_hash["config_file_path"]} #{container_name}:/tmp/)
++
++  # Copy repo file if cp_path is specified
++  if config_hash["cp_path"] && !config_hash["cp_path"].empty?
++    puts "[INFO] Copying repo file from #{config_hash["cp_path"]} to container"
++    %x(docker cp #{config_hash["cp_path"]} #{container_name}:/etc/yum.repos.d/openEuler.repo)
++  end
+   system("docker exec -it #{container_name} /bin/bash -c 'source /tmp/.project_config;bash /lkp-tests/tests/local-rpmbuild 2>&1 | tee /build.log'")
+   %x(docker cp #{container_name}:/build.log #{config_hash["output_dir"]})
+   %x(docker cp #{container_name}:/tmp/.build_failed #{config_hash["output_dir"]} 2>/dev/null)
+@@ -415,6 +442,14 @@ def build_package(image_id, clean_flag, config_hash)
+   end
+ end
+
++def get_build_image(local_image)
++  full_hash = %x(docker inspect #{local_image} --format "{{.Id}}" 2>/dev/null).strip
++  if full_hash.empty?
++    puts "[ERROR] Docker image '#{local_image}' not found locally"
++    exit 1
++  end
++  return full_hash.gsub(/^sha256:/, '')
++end
+
+ os_project = config_hash['os_project'] || ''
+ package = config_hash['package'] || ''
+@@ -455,11 +490,13 @@ else
+ end
+
+ arch = RbConfig::CONFIG['arch'].split('-')[0]
++user_arch = config_hash['arch'] if config_hash.has_key?('arch') && !config_hash['arch'].nil? && !config_hash['arch'].empty?
+ config_hash["arch"] = arch
+ config_hash['LKP_SRC'] = "/lkp-tests"
+ config_hash["build_user"] = "lkp"
+ config_hash['output_dir'] = "/tmp/#{os_project}/#{package}"
+ config_hash['config_file_path'] = "#{config_hash['output_dir']}/.project_config"
++config_hash["cp_path"] = cp_path
+ config_hash["debug_stage"] = debug_stage
+
+ check_result, flag = check_project_package_exists(os_project, my_config, config_hash)
+@@ -467,6 +504,11 @@ get_package_data(config_hash, check_result, flag)
+ result = search_builds_info(os_project, arch, my_config)
+ projects_info = get_projects_data(os_project, my_config, config_hash)
+ repo_array = construct_repo_url(projects_info, config_hash, dailybuild_hash)
++config_hash["arch"] = user_arch unless user_arch.nil?
+ write_config_file(config_hash, repo_array)
+-image_id = download_docker_image(config_hash, dailybuild_hash)
++if local_image.nil?
++  image_id = download_docker_image(config_hash, dailybuild_hash)
++else
++  image_id = get_build_image(local_image)
++end
+ build_package(image_id, clean_flag, config_hash)
+diff --git a/tests/local-rpmbuild b/tests/local-rpmbuild
+index fe8656f..73db12a 100755
+--- a/tests/local-rpmbuild
++++ b/tests/local-rpmbuild
+@@ -163,7 +163,7 @@ sync_system_rpms()
+        if [[ "${mount_repo_name}" =~ "lastest_repo" ]];then
+                dnf distro-sync -y --allowerasing --repo repo_0
+        fi
+-       rm -rf /etc/yum.repos.d/openEuler.repo
++       #rm -rf /etc/yum.repos.d/openEuler.repo
+ }
+
+ install_pre_rpm()
+@@ -228,6 +228,8 @@ find_spec_file()
+
+ check_specfile_exist()
+ {
++       dnf install -y git dnf-utils
++       dnf install -y git-lfs || true
+        git config --global http.lowSpeedLimit 0
+        git config --global http.lowSpeedTime 3600
+        git config --global lfs.activitytimeout 3600
+@@ -309,7 +311,7 @@ git_lfs_clone()
+                if [[ "${i}" -gt 1 ]];then
+                        sleep 3
+                fi
+-               git lfs clone ${1} -b ${2} --depth=1 2>/dev/null || continue
++               git lfs clone ${1} -b ${2} --depth=1 2>/dev/null|| git clone ${1} -b ${2} --depth=1 2>/dev/null || continue
+                return 0
+        done
+        return 1
+@@ -455,7 +457,7 @@ change_file_permission()
+ build_rpm()
+ {
+        check_specfile_exist
+-       config_repo
++       #config_repo
+        init_local_env
+        set_project_config
+        download_code_repo
